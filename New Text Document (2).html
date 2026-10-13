@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>STARFALL</title>
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#050713;color:#f4f7ff;font-family:Arial,sans-serif}
+canvas{display:block;width:100%;height:100%}
+
+#hud{
+  position:absolute;top:18px;left:20px;right:20px;
+  display:flex;justify-content:space-between;align-items:center;
+  pointer-events:none;font-weight:bold;letter-spacing:2px;
+  text-shadow:0 0 12px #7c8cff
+}
+.hudbox{
+  background:#0b1028c9;border:1px solid #6475bd66;
+  border-radius:12px;padding:10px 15px;font-size:13px
+}
+#time{font-size:19px;color:#fff}
+
+#controls{
+  position:absolute;bottom:22px;left:22px;
+  display:grid;grid-template-columns:52px 52px 52px;
+  grid-template-rows:52px 52px;gap:7px;user-select:none
+}
+.ctrl{
+  border:1px solid #9eafff77;background:#121a3dcc;color:white;
+  border-radius:13px;font-size:23px;display:flex;
+  align-items:center;justify-content:center;touch-action:none;
+  box-shadow:0 0 15px #465fff18;cursor:pointer
+}
+.ctrl:active,.ctrl.active{background:#485ce8aa;border-color:#c7d0ff}
+#up{grid-column:2;grid-row:1}
+#left{grid-column:1;grid-row:2}
+#down{grid-column:2;grid-row:2}
+#right{grid-column:3;grid-row:2}
+
+#hint{
+  position:absolute;bottom:28px;right:24px;color:#aeb8e5;
+  font-size:12px;letter-spacing:1px;text-align:right;line-height:1.8
+}
+
+#overlay{
+  position:absolute;inset:0;display:flex;align-items:center;
+  justify-content:center;background:#030510a8;backdrop-filter:blur(5px)
+}
+.panel{
+  width:min(390px,88vw);padding:32px 28px;text-align:center;
+  background:linear-gradient(145deg,#141b39f5,#080d20f8);
+  border:1px solid #8292ff70;border-radius:22px;
+  box-shadow:0 0 65px #364fff30
+}
+h1{
+  font-size:38px;letter-spacing:7px;margin:0 0 8px;
+  text-shadow:0 0 24px #7388ff
+}
+#message{font-size:14px;color:#b8c4ef;line-height:1.7;margin:14px 0 23px}
+button#start{
+  border:0;border-radius:12px;padding:13px 38px;font-weight:bold;
+  letter-spacing:2px;color:white;
+  background:linear-gradient(90deg,#5265ff,#a04dff);
+  cursor:pointer;font-size:14px;box-shadow:0 0 25px #6e61ff50
+}
+#overlay.hidden{display:none}
+
+@media(max-width:600px){
+  #hud{top:10px;left:10px;right:10px}
+  .hudbox{padding:8px 10px;font-size:10px;letter-spacing:1px}
+  #controls{left:12px;bottom:14px;grid-template-columns:48px 48px 48px;grid-template-rows:48px 48px;gap:5px}
+  .ctrl{font-size:21px}
+  #hint{right:12px;bottom:18px;font-size:10px}
+}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+
+<div id="hud">
+  <div class="hudbox">STARFALL</div>
+  <div class="hudbox">TIME &nbsp; <span id="time">30.0</span></div>
+  <div class="hudbox">SCORE &nbsp; <span id="score">0</span></div>
+</div>
+
+<div id="controls">
+  <button class="ctrl" id="up" aria-label="Move up">▲</button>
+  <button class="ctrl" id="left" aria-label="Move left">◀</button>
+  <button class="ctrl" id="down" aria-label="Move down">▼</button>
+  <button class="ctrl" id="right" aria-label="Move right">▶</button>
+</div>
+
+<div id="hint">MOVE: ARROWS / WASD<br>AVOID THE BEAMS</div>
+
+<div id="overlay">
+  <div class="panel">
+    <h1 id="title">STARFALL</h1>
+    <div id="message">Survive for 30 seconds.<br>One hit ends the run.</div>
+    <button id="start">START</button>
+  </div>
+</div>
+
+<script>
+const canvas=document.getElementById('game');
+const ctx=canvas.getContext('2d');
+const overlay=document.getElementById('overlay');
+const titleEl=document.getElementById('title');
+const messageEl=document.getElementById('message');
+const startBtn=document.getElementById('start');
+const timeEl=document.getElementById('time');
+const scoreEl=document.getElementById('score');
+
+let W=innerWidth,H=innerHeight,dpr=1;
+let stars=[],player,lasers=[],particles=[];
+let running=false,startTime=0,lastFrame=0,lastShot=0;
+let turret={x:0,y:0,angle:Math.PI/2,flash:0};
+
+const DURATION=30;
+const keys={};
+const held={up:false,down:false,left:false,right:false};
+
+function resize(){
+  W=innerWidth;
+  H=innerHeight;
+  dpr=Math.min(devicePixelRatio||1,2);
+
+  canvas.width=W*dpr;
+  canvas.height=H*dpr;
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+
+  stars=Array.from(
+    {length:Math.min(180,Math.floor(W*H/6500))},
+    ()=>({
+      x:Math.random()*W,
+      y:Math.random()*H,
+      r:Math.random()*1.7+.3,
+      a:Math.random()*.65+.15,
+      s:Math.random()*.6+.2
+    })
+  );
+
+  turret.x=W/2;
+  turret.y=48;
+
+  if(player){
+    player.x=Math.min(Math.max(player.x,24),W-24);
+    player.y=Math.min(Math.max(player.y,75),H-45);
+  }
+
+  draw(performance.now());
+}
+addEventListener('resize',resize);
+
+function reset(){
+  player={
+    x:W/2,
+    y:H*.76,
+    r:14,
+    speed:Math.max(310,Math.min(W,H)*.65)
+  };
+
+  lasers=[];
+  particles=[];
+
+  turret={
+    x:W/2,
+    y:48,
+    angle:Math.PI/2,
+    flash:0
+  };
+
+  running=true;
+  startTime=performance.now();
+  lastFrame=startTime;
+  lastShot=startTime-500;
+
+  titleEl.textContent='STARFALL';
+  messageEl.textContent='Survive for 30 seconds.<br>One hit ends the run.';
+  startBtn.textContent='START';
+  overlay.classList.add('hidden');
+
+  timeEl.textContent=DURATION.toFixed(1);
+  scoreEl.textContent='0';
+
+  requestAnimationFrame(loop);
+}
+
+/* The turret barrel is the actual origin of every laser. */
+function fireLaser(now){
+  const dx=player.x-turret.x;
+  const dy=player.y-turret.y;
+  const angle=Math.atan2(dy,dx);
+
+  turret.angle=angle;
+  turret.flash=.16;
+
+  const muzzleDistance=39;
+  const startX=turret.x+Math.cos(angle)*muzzleDistance;
+  const startY=turret.y+Math.sin(angle)*muzzleDistance;
+
+  const speed=Math.max(540,H*1.05);
+
+  lasers.push({
+    x:startX,
+    y:startY,
+    vx:Math.cos(angle)*speed,
+    vy:Math.sin(angle)*speed,
+    speed:speed,
+    width:Math.max(10,Math.min(15,W*.013)),
+    hue:Math.random()<.25?185:330,
+    length:Math.max(75,Math.min(115,H*.16))
+  });
+
+  lastShot=now;
+}
+
+function drawBackground(t){
+  const g=ctx.createLinearGradient(0,0,W,H);
+  g.addColorStop(0,'#080b20');
+  g.addColorStop(.55,'#09091b');
+  g.addColorStop(1,'#140820');
+
+  ctx.fillStyle=g;
+  ctx.fillRect(0,0,W,H);
+
+  const glow=ctx.createRadialGradient(
+    W*.5,H*.5,10,W*.5,H*.5,Math.max(W,H)*.7
+  );
+  glow.addColorStop(0,'#20275a20');
+  glow.addColorStop(1,'#03040b00');
+
+  ctx.fillStyle=glow;
+  ctx.fillRect(0,0,W,H);
+
+  for(const s of stars){
+    ctx.globalAlpha=s.a*(.7+.3*Math.sin(t*.001*s.s+s.x));
+    ctx.fillStyle='#dce6ff';
+    ctx.beginPath();
+    ctx.arc(s.x,s.y,s.r,0,Math.PI*2);
+    ctx.fill();
+  }
+
+  ctx.globalAlpha=1;
+}
+
+function drawTurret(t){
+  const x=turret.x;
+  const y=turret.y;
+
+  ctx.save();
+  ctx.translate(x,y);
+
+  /* Fixed turret housing */
+  ctx.shadowBlur=22;
+  ctx.shadowColor='#657aff';
+
+  ctx.fillStyle='#111a35';
+  ctx.strokeStyle='#8298ff';
+  ctx.lineWidth=2;
+
+  ctx.beginPath();
+  ctx.moveTo(-35,-15);
+  ctx.lineTo(35,-15);
+  ctx.lineTo(28,10);
+  ctx.lineTo(18,19);
+  ctx.lineTo(-18,19);
+  ctx.lineTo(-28,10);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.fillStyle='#344675';
+  ctx.fillRect(-24,-21,48,7);
+
+  /* Rotating barrel, attached to the turret */
+  ctx.rotate(turret.angle+Math.PI/2);
+
+  ctx.shadowBlur=18;
+  ctx.shadowColor='#ff438f';
+
+  ctx.fillStyle='#252f52';
+  ctx.strokeStyle='#c1ccff';
+  ctx.lineWidth=2;
+
+  ctx.beginPath();
+  ctx.roundRect(-9,-39,18,38,5);
+  ctx.fill();
+  ctx.stroke();
+
+  /* Muzzle at the end of the barrel */
+  ctx.fillStyle=turret.flash>0?'#ffffff':'#ff438f';
+  ctx.shadowBlur=turret.flash>0?35:16;
+
+  ctx.beginPath();
+  ctx.ellipse(0,-36,6,4,0,0,Math.PI*2);
+  ctx.fill();
+
+  ctx.restore();
+
+  /* Turret status lights */
+  ctx.save();
+  ctx.shadowBlur=12;
+  ctx.shadowColor='#ff4f9e';
+  ctx.fillStyle='#ff4f9e';
+
+  ctx.beginPath();
+  ctx.arc(x-20,y+2,2.5,0,Math.PI*2);
+  ctx.arc(x+20,y+2,2.5,0,Math.PI*2);
+  ctx.fill();
+
+  ctx.restore();
+}
+
+function drawRocket(){
+  const x=player.x,y=player.y;
+
+  ctx.save();
+  ctx.translate(x,y);
+
+  const flame=ctx.createRadialGradient(0,22,1,0,22,22);
+  flame.addColorStop(0,'#fff4a6');
+  flame.addColorStop(.4,'#ff7c4d');
+  flame.addColorStop(1,'#ff3caa00');
+
+  ctx.fillStyle=flame;
+  ctx.beginPath();
+  ctx.ellipse(0,23,10,22,0,0,Math.PI*2);
+  ctx.fill();
+
+  ctx.fillStyle='#d7e5ff';
+  ctx.beginPath();
+  ctx.moveTo(0,-21);
+  ctx.quadraticCurveTo(12,-7,10,9);
+  ctx.lineTo(6,16);
+  ctx.lineTo(-6,16);
+  ctx.lineTo(-10,9);
+  ctx.quadraticCurveTo(-12,-7,0,-21);
+  ctx.fill();
+
+  ctx.fillStyle='#596eff';
+  ctx.beginPath();
+  ctx.moveTo(-8,5);
+  ctx.lineTo(-17,15);
+  ctx.lineTo(-7,14);
+  ctx.fill();
+
+  ctx.beginPath();
+  ctx.moveTo(8,5);
+  ctx.lineTo(17,15);
+  ctx.lineTo(7,14);
+  ctx.fill();
+
+  ctx.fillStyle='#24365e';
+  ctx.beginPath();
+  ctx.ellipse(0,-5,4.5,6,0,0,Math.PI*2);
+  ctx.fill();
+
+  ctx.strokeStyle='#b4c4ff';
+  ctx.lineWidth=1.5;
+  ctx.beginPath();
+  ctx.ellipse(0,0,11,20,0,0,Math.PI*2);
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+function drawLaser(l){
+  /* Draw the beam along the exact direction it travels. */
+  const tailX=l.x-l.vx/l.speed*l.length;
+  const tailY=l.y-l.vy/l.speed*l.length;
+
+  ctx.save();
+  ctx.lineCap='round';
+
+  ctx.shadowBlur=28;
+  ctx.shadowColor=`hsl(${l.hue},100%,60%)`;
+  ctx.strokeStyle=`hsla(${l.hue},100%,60%,.35)`;
+  ctx.lineWidth=l.width*3;
+
+  ctx.beginPath();
+  ctx.moveTo(tailX,tailY);
+  ctx.lineTo(l.x,l.y);
+  ctx.stroke();
+
+  ctx.shadowBlur=17;
+  ctx.strokeStyle=`hsl(${l.hue},100%,62%)`;
+  ctx.lineWidth=l.width;
+
+  ctx.beginPath();
+  ctx.moveTo(tailX,tailY);
+  ctx.lineTo(l.x,l.y);
+  ctx.stroke();
+
+  ctx.shadowBlur=8;
+  ctx.strokeStyle='#fff';
+  ctx.lineWidth=Math.max(2,l.width*.3);
+
+  ctx.beginPath();
+  ctx.moveTo(tailX,tailY);
+  ctx.lineTo(l.x,l.y);
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+function segmentDistance(px,py,x1,y1,x2,y2){
+  const dx=x2-x1,dy=y2-y1;
+  const len=dx*dx+dy*dy;
+  const f=len?Math.max(0,Math.min(1,((px-x1)*dx+(py-y1)*dy)/len)):0;
+  const x=x1+f*dx,y=y1+f*dy;
+  return Math.hypot(px-x,py-y);
+}
+
+function burst(x,y){
+  for(let i=0;i<35;i++){
+    const a=Math.random()*Math.PI*2;
+    const s=60+Math.random()*280;
+
+    particles.push({
+      x,y,
+      vx:Math.cos(a)*s,
+      vy:Math.sin(a)*s,
+      life:.5+Math.random()*.65
+    });
+  }
+}
+
+function drawParticles(dt){
+  for(let i=particles.length-1;i>=0;i--){
+    const p=particles[i];
+
+    p.life-=dt;
+    p.x+=p.vx*dt;
+    p.y+=p.vy*dt;
+    p.vx*=.98;
+    p.vy*=.98;
+
+    if(p.life<=0){
+      particles.splice(i,1);
+      continue;
+    }
+
+    ctx.globalAlpha=Math.min(1,p.life*1.5);
+    ctx.fillStyle='#a9c4ff';
+
+    ctx.beginPath();
+    ctx.arc(p.x,p.y,2.2,0,Math.PI*2);
+    ctx.fill();
+  }
+
+  ctx.globalAlpha=1;
+}
+
+function finish(won){
+  running=false;
+
+  if(!won)burst(player.x,player.y);
+
+  titleEl.textContent=won?'YOU WIN':'GAME OVER';
+  messageEl.textContent=won
+    ?'You survived the turret.'
+    :'One hit. Run ended.';
+
+  startBtn.textContent='PLAY AGAIN';
+  overlay.classList.remove('hidden');
+}
+
+function update(dt,now){
+  let dx=0,dy=0;
+
+  if(keys.ArrowLeft||keys.a||keys.A||held.left)dx--;
+  if(keys.ArrowRight||keys.d||keys.D||held.right)dx++;
+  if(keys.ArrowUp||keys.w||keys.W||held.up)dy--;
+  if(keys.ArrowDown||keys.s||keys.S||held.down)dy++;
+
+  if(dx&&dy){
+    dx*=.7071;
+    dy*=.7071;
+  }
+
+  player.x+=dx*player.speed*dt;
+  player.y+=dy*player.speed*dt;
+
+  player.x=Math.max(18,Math.min(W-18,player.x));
+  player.y=Math.max(75,Math.min(H-35,player.y));
+
+  const elapsed=(now-startTime)/1000;
+  const remaining=Math.max(0,DURATION-elapsed);
+
+  timeEl.textContent=remaining.toFixed(1);
+  scoreEl.textContent=Math.floor(elapsed*10);
+
+  turret.flash=Math.max(0,turret.flash-dt);
+
+  /* The stationary turret fires repeatedly, with increasing speed. */
+  const interval=Math.max(.42,.82-elapsed*.012);
+
+  if(now-lastShot>=interval*1000){
+    fireLaser(now);
+  }
+
+  for(let i=lasers.length-1;i>=0;i--){
+    const l=lasers[i];
+
+    l.x+=l.vx*dt;
+    l.y+=l.vy*dt;
+
+    const tailX=l.x-l.vx/l.speed*l.length;
+    const tailY=l.y-l.vy/l.speed*l.length;
+
+    if(segmentDistance(
+      player.x,player.y,
+      tailX,tailY,l.x,l.y
+    )<player.r+l.width*.55){
+      finish(false);
+      return;
+    }
+
+    if(l.x<-200||l.x>W+200||l.y<-200||l.y>H+200){
+      lasers.splice(i,1);
+    }
+  }
+
+  if(elapsed>=DURATION)finish(true);
+}
+
+function draw(t){
+  drawBackground(t);
+
+  for(const l of lasers)drawLaser(l);
+
+  if(player)drawRocket();
+
+  drawTurret(t);
+  drawParticles(.016);
+}
+
+function loop(now){
+  if(!running)return;
+
+  const dt=Math.min((now-lastFrame)/1000,.035);
+  lastFrame=now;
+
+  update(dt,now);
+  draw(now);
+
+  if(running)requestAnimationFrame(loop);
+}
+
+startBtn.addEventListener('click',reset);
+
+addEventListener('keydown',e=>{
+  if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key)){
+    e.preventDefault();
+  }
+  keys[e.key]=true;
+});
+
+addEventListener('keyup',e=>keys[e.key]=false);
+
+addEventListener('blur',()=>{
+  for(const k in keys)keys[k]=false;
+});
+
+for(const dir of ['up','down','left','right']){
+  const b=document.getElementById(dir);
+
+  const press=e=>{
+    e.preventDefault();
+    held[dir]=true;
+    b.classList.add('active');
+    try{b.setPointerCapture(e.pointerId)}catch{}
+  };
+
+  const release=()=>{
+    held[dir]=false;
+    b.classList.remove('active');
+  };
+
+  b.addEventListener('pointerdown',press);
+  b.addEventListener('pointerup',release);
+  b.addEventListener('pointercancel',release);
+  b.addEventListener('lostpointercapture',release);
+}
+
+player={
+  x:W/2,
+  y:H*.76,
+  r:14,
+  speed:Math.max(310,Math.min(W,H)*.65)
+};
+
+resize();
+</script>
+</body>
+</html>
